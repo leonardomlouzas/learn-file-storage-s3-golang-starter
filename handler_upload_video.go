@@ -99,6 +99,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	newFilePath, err := processVideoForFastStart(newFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't process video for fast start", err)
+		return
+	}
+	newFile, err = os.Open(newFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't open processed video file", err)
+		return
+	}
+	defer os.Remove(newFilePath)
+	defer newFile.Close()
+
 	aspectRatio, err := getVideoAspectRatio(newFile.Name())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get video aspect ratio", err)
@@ -170,4 +183,14 @@ func getVideoAspectRatio(filepath string) (string, error) {
 	
 	divisor := gcd(width, height)
 	return fmt.Sprintf("%d:%d", width/divisor, height/divisor), nil	
+}
+
+func processVideoForFastStart(filepath string) (string, error) {
+	outputFilePath := filepath + ".processing"
+
+	cmd := exec.Command("ffmpeg", "-i", filepath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg command failed: %w", err)
+	}
+	return outputFilePath, nil
 }
