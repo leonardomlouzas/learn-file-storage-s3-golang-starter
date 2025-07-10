@@ -3,16 +3,25 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
+
+type ffprobeVideoFormat struct {
+	Streams []struct {
+		Width		int		`json:"width"`
+		Height		int		`json:"height"`
+	} `json:"streams"`
+}
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	uploadLimit := int64(1 << 30) // 1 GB
@@ -89,7 +98,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't generate random bytes", err)
 		return
 	}
-	randomFileName := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+	aspectRatio, err := getVideoAspectRatio(newFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get video aspect ratio", err)
+		return
+	}
+	if aspectRatio == "16:9" {
+		aspectRatio = "landscape"
+	} else if aspectRatio == "9:16" {
+		aspectRatio = "portrait"
+	} else {
+		aspectRatio = "other"
+	}
+	randomFileName := aspectRatio + "-" + base64.RawURLEncoding.EncodeToString(randomBytes) + ".mp4"
+	
 
 	if _, err := newFile.Seek(0, io.SeekStart); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't seek file", err)
@@ -117,4 +140,34 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func getVideoAspectRatio(filepath string) (string, error) {
+	command := fmt.Sprintf("ffprobe -v error -print_format json -show_streams %s", filepath)
+	out, err := exec.Command("bash", "-c", command).Output()
+	if err != nil {
+		return "", fmt.Errorf("ffprobe command failed: %w", err)
+	}
+	var ffprobeVideo ffprobeVideoFormat
+
+	if err := json.Unmarshal(out, &ffprobeVideo); err != nil {
+		return "", fmt.Errorf("unmarshalling ffprobe output failed: %w", err)
+	}
+	if len(ffprobeVideo.Streams) == 0 {
+		return "", fmt.Errorf("no video streams found in ffprobe output")
+	}
+	width := ffprobeVideo.Streams[0].Width
+	height := ffprobeVideo.Streams[0].Height
+	if height == 0 || width == 0 {
+		return "", fmt.Errorf("invalid video dimensions: %dx%d", width, height)
+	}
+	gcd := func(a, b int) int {
+		for b != 0 {
+			a, b = b, a%b
+		}
+		return a
+	}
+	
+	divisor := gcd(width, height)
+	return fmt.Sprintf("%d:%d", width/divisor, height/divisor), nil	
 }
